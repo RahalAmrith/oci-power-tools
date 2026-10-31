@@ -68,6 +68,8 @@ Every tool does one thing: it fetches data from OCI and returns a **pandas DataF
 | | Protection rules in a WAF policy | Rule name, action, description, labels |
 | | Recommendations in a WAF policy | Recommended actions, description, labels |
 | 📈 **Metrics** | All metrics | Metrics of a compartment you pick: namespace, name, resource group and dimensions |
+| 🧾 **Audit** | Audit events of a resource | Who did what to a resource: events matching its OCID in a compartment you pick ([details](#audit-events)) |
+| | Audit events of a user | Recent events performed by a user you search for, in one or all compartments ([details](#audit-events)) |
 
 <a id="permissions-of-a-user"></a>
 
@@ -86,6 +88,28 @@ Look up a user by name, email or OCID. The tool then:
 
 - Groups are matched by **name** inside the statement text. A short group name (e.g. `dev`) also matches statements for longer names (e.g. `developers`), and a group name that only appears in a `where` condition also matches. Review results before acting on them.
 - Only `allow group` and `endorse group` statements are considered. Dynamic groups, `any-user`, and group references by OCID are not covered.
+
+</details>
+
+<a id="audit-events"></a>
+
+<details>
+<summary><b>🧾 Audit events</b> — how they work and their limits</summary>
+
+<br>
+
+Both tools ask which **regions** to search (the regions the compartments are using, or one you pick), a **time window** (last hour, 24 hours, 7 days, 30 days, or a custom number of days) and whether to include **read events**. Read events (`GET` / `HEAD`) are hidden by default because they make up most of the log. Results are shown newest first.
+
+- **Audit events of a resource**: enter the resource OCID and pick the compartment it lives in (the tenancy root is in the list). If the OCID contains a region (e.g. `uk-london-1`) only that region is searched. Events whose resource or request path contains that OCID are returned.
+- **Audit events of a user**: search for the user as in *Permissions of a user*, then scan **all compartments** or **one**. Events performed by that user are returned.
+
+**Keep these in mind:**
+
+- The OCI Audit API can only be queried one compartment at a time, and cannot filter by resource or user. The tools download the events of each compartment and filter them here, so scanning all compartments over a long window can take a while. The time window is fetched in parallel slices and a running count of events is shown while it works.
+- A resource is logged in the compartment it had when the action happened. If it was moved, or you pick the wrong compartment, events can be missing.
+- **Audit events are stored per region.** Changes to a resource are logged in the region where the resource lives, so searching only the profile's region misses them. The tools find the regions in use from the last 30 days of cost data, which is much faster than querying every subscribed region. Resources that cost nothing don't show up there, so if you expect events and get none, pick the region yourself. If the cost data can't be read you are asked to pick a region.
+- OCI keeps audit events for 90 days by default (up to 365 if your tenancy extends it).
+- Users are matched by their OCID, so only users known to the IAM API are found. Compartments you cannot read are skipped with a message.
 
 </details>
 
@@ -163,6 +187,7 @@ Select a section :
         03 : Virtual Machines
         04 : Web App Firewall
         05 : Metrics
+        06 : Audit
         00 : Exit
 
 Enter option number : 1
@@ -252,6 +277,8 @@ Allow group <group> to read volume-family in tenancy
 Allow group <group> to read cluster-family in tenancy
 Allow group <group> to read waas-family in tenancy
 Allow group <group> to read metrics in tenancy
+Allow group <group> to read audit-events in tenancy
+Allow group <group> to read usage-report in tenancy
 ```
 
 Narrow `tenancy` to a compartment if you only need part of the tenancy. Exact requirements vary by tool; if something returns an authorization error, check which resource type it touches.
@@ -274,7 +301,8 @@ oci-power-tools/
 │   ├── container_engine/    # clusters
 │   ├── compute/             # virtual machines
 │   ├── waf/                 # web application firewall
-│   └── monitoring/          # metrics
+│   ├── monitoring/          # metrics
+│   └── audit/               # audit events of a resource or a user
 ├── helpers/
 │   ├── ocisdk.py            # Wrapper around the OCI Python SDK
 │   ├── htmlreport.py        # Builds the spreadsheet-style HTML report

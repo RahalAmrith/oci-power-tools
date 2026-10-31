@@ -7,6 +7,8 @@
 #########################################################################################
 
 import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta, timezone
 import os
 
 import oci
@@ -15,9 +17,15 @@ import json
 from .utils import getProfilesFromConfig
 
 
+# The audit log can only be paged one page of about 100 events at a time, so a busy
+# compartment takes thousands of calls. The time window is cut into slices that are
+# paged side by side. The audit API allows around 5 requests per second.
+AUDIT_SLICE = timedelta(hours=6)
+AUDIT_WORKERS = 5
+
+
 class OCISDK:
     configs = {}
-    today = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     def __init__(self, config_file_path=None):
         if config_file_path is None:
@@ -53,145 +61,58 @@ class OCISDK:
 
             return compartments
 
-    def getDailyUsageByService(self, date=today, cfgName="DEFAULT"):
-        dts = date
-        dte = date + datetime.timedelta(days=1)
+    def getCompartmentActiveRegions(self, compartmentID=None, cfgName="DEFAULT"):
+        """
+        Goal: Get the list of active regions for a given compartment by checking
+        the cost for the compartment in each region. If the cost is greater than 0,
+        it means the compartment is active in that region.
+
+        Without a compartment the whole tenancy is checked.
+        """
+        _now = datetime.datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        _start_time = _now - timedelta(days=31)
+        _end_time = _now - timedelta(days=1)
 
         usage_client = oci.usage_api.UsageapiClient(self.configs[cfgName])
 
-        request_summarized_usages_response = usage_client.request_summarized_usages(
-            request_summarized_usages_details=oci.usage_api.models.RequestSummarizedUsagesDetails(
-                tenant_id=self.configs[cfgName]["tenancy"],
-                time_usage_started=dts.isoformat() + "z",
-                time_usage_ended=dte.isoformat() + "z",
-                granularity="DAILY",
-                is_aggregate_by_time=False,
-                group_by=["service"],
-                compartment_depth=1,
-            ),
-            page="1",
-            limit=868,
-        )
+        usageFilter = None
 
-        serviceUsage = {"date": dts, "list": [], "total": 0.0}
-        totalUsage = 0.0
-
-        for item in request_summarized_usages_response.data.items:
-            serviceName = str(item.service).replace(" ", "_")
-            usage = item.computed_amount if item.computed_amount is not None else 0.0
-
-            if float(usage) > 0:
-                serviceUsage["list"].append({"name": serviceName, "usage": usage})
-                totalUsage += usage
-
-        serviceUsage["total"] = totalUsage
-
-        return serviceUsage
-
-    def getDailyUsageByCompartment(self, date=today, cfgName="DEFAULT"):
-        dts = date
-        dte = date + datetime.timedelta(days=1)
-
-        usage_client = oci.usage_api.UsageapiClient(self.configs[cfgName])
-
-        request_summarized_usages_response = usage_client.request_summarized_usages(
-            request_summarized_usages_details=oci.usage_api.models.RequestSummarizedUsagesDetails(
-                tenant_id=self.configs[cfgName]["tenancy"],
-                time_usage_started=dts.isoformat() + "z",
-                time_usage_ended=dte.isoformat() + "z",
-                granularity="DAILY",
-                is_aggregate_by_time=True,
-                group_by=["compartmentId"],
-                compartment_depth=1,
-            ),
-            page="1",
-        )
-
-        # print(request_summarized_usages_response.data)
-
-        compartmentUsage = {"date": dts, "list": [], "total": 0.0}
-
-        totalUsage = 0.0
-
-        for item in request_summarized_usages_response.data.items:
-            cmpId = str(item.compartment_id)
-            usage = item.computed_amount if item.computed_amount is not None else 0.0
-
-            if float(usage) > 0:
-                compartmentUsage["list"].append(
-                    {"usage": usage, "compartmentId": cmpId}
-                )
-
-            totalUsage += usage
-
-        compartmentUsage["total"] = totalUsage
-
-        return compartmentUsage
-
-    def getDailyUsageByCompartmentAndService(self, date=today, cfgName="DEFAULT"):
-        dts = date
-        dte = date + datetime.timedelta(days=1)
-
-        usage_client = oci.usage_api.UsageapiClient(self.configs[cfgName])
-
-        request_summarized_usages_response = usage_client.request_summarized_usages(
-            request_summarized_usages_details=oci.usage_api.models.RequestSummarizedUsagesDetails(
-                tenant_id=self.configs[cfgName]["tenancy"],
-                time_usage_started=dts.isoformat() + "z",
-                time_usage_ended=dte.isoformat() + "z",
-                granularity="DAILY",
-                is_aggregate_by_time=True,
-                group_by=["compartmentId", "service"],
-                compartment_depth=1,
-            ),
-            page="1",
-        )
-
-        # print(request_summarized_usages_response.data)
-
-        compartmentUsage = {"date": dts, "list": [], "total": 0.0}
-
-        totalUsage = 0.0
-
-        for item in request_summarized_usages_response.data.items:
-            cmpId = str(item.compartment_id)
-            svc = str(item.service)
-            usage = item.computed_amount if item.computed_amount is not None else 0.0
-
-            if float(usage) > 0:
-                compartmentUsage["list"].append(
-                    {"usage": usage, "service": svc, "compartmentId": cmpId}
-                )
-
-            totalUsage += usage
-
-        compartmentUsage["total"] = totalUsage
-
-        return compartmentUsage
-
-    def getBudgetAlertRules(self, cfgName="DEFAULT"):
-        budget_client = oci.budget.BudgetClient(self.configs[cfgName])
-        budget_list_response = budget_client.list_budgets(
-            self.configs[cfgName]["tenancy"]
-        )
-
-        budget_list = []
-
-        for budget in budget_list_response.data:
-            budget_list.append(
-                {
-                    "compartment_id": budget.targets[0],
-                    "name": budget.display_name,
-                    "amount": budget.amount,
-                    "actual_spend": budget.actual_spend,
-                    "percentage": (
-                        float(budget.actual_spend) / float(budget.amount) * 100.0
-                    ),
-                    "forecasted_spend": budget.forecasted_spend,
-                }
+        if compartmentID:
+            usageFilter = oci.usage_api.models.Filter(
+                operator="AND",
+                dimensions=[
+                    oci.usage_api.models.Dimension(
+                        key="compartmentId", value=compartmentID
+                    )
+                ],
             )
 
-        return budget_list
+        query = oci.usage_api.models.RequestSummarizedUsagesDetails(
+            tenant_id=self.configs[cfgName]["tenancy"],
+            time_usage_started=_start_time,
+            time_usage_ended=_end_time,
+            granularity="DAILY",
+            is_aggregate_by_time=False,
+            group_by=["region"],
+            filter=usageFilter,
+        )
+        usage_resp = usage_client.request_summarized_usages(query)
+        usage_resp = json.loads(str(usage_resp.data))
+
+        activeRegions = set()
+
+        for item in usage_resp["items"]:
+            computed_amount = (
+                float(item["computed_amount"])
+                if item["computed_amount"] is not None
+                else 0.0
+            )
+            if computed_amount > 0 and item["region"]:
+                activeRegions.add(item["region"])
+
+        return [{"region_name": region} for region in sorted(activeRegions)]
 
     def getUserGroups(self, cfgName="DEFAULT"):
         identity_client = oci.identity.IdentityClient(self.configs[cfgName])
@@ -444,26 +365,6 @@ class OCISDK:
 
         return result
 
-    def startInstance(self, instanceID, cfgName="DEFAULT"):
-        compute_engine_client = oci.core.ComputeClient(self.configs[cfgName])
-
-        # Start the instance
-        response = compute_engine_client.instance_action(instanceID, "START")
-
-        # Print the response
-        print(response.data)
-        return response.data
-
-    def stopInstance(self, instanceID, cfgName="DEFAULT"):
-        compute_engine_client = oci.core.ComputeClient(self.configs[cfgName])
-
-        # Stop the instance
-        response = compute_engine_client.instance_action(instanceID, "SOFTSTOP")
-
-        # Print the response
-        print(response.data)
-        return response.data
-
     def getFirewallPolicies(self, compartmentID, cfgName="DEFAULT"):
         waas_client = oci.waas.WaasClient(self.configs[cfgName])
 
@@ -577,3 +478,100 @@ class OCISDK:
         #     )
 
         return list_metrics_response.data
+
+    def getSubscribedRegions(self, cfgName="DEFAULT"):
+        identity_client = oci.identity.IdentityClient(self.configs[cfgName])
+
+        subscriptions = identity_client.list_region_subscriptions(
+            self.configs[cfgName]["tenancy"]
+        )
+
+        return [sub.region_name for sub in subscriptions.data if sub.status == "READY"]
+
+    def getAuditEvents(
+        self,
+        compartmentID,
+        startTime,
+        endTime,
+        cfgName="DEFAULT",
+        region=None,
+        onPage=None,
+    ):
+        """onPage is called with the number of events of every page fetched, from
+        several threads."""
+
+        config = self.configs[cfgName]
+
+        if region:
+            config = dict(config, region=region)
+
+        slices = []
+        sliceStart = startTime
+
+        while sliceStart < endTime:
+            sliceEnd = min(sliceStart + AUDIT_SLICE, endTime)
+            slices.append((sliceStart, sliceEnd))
+            sliceStart = sliceEnd
+
+        def fetchSlice(window):
+            # A client per slice, so nothing is shared between the threads
+            audit_client = oci.audit.AuditClient(config)
+
+            events = []
+            page = None
+
+            while True:
+                kwargs = {"retry_strategy": oci.retry.DEFAULT_RETRY_STRATEGY}
+
+                if page:
+                    kwargs["page"] = page
+
+                response = audit_client.list_events(
+                    compartment_id=compartmentID,
+                    start_time=window[0],
+                    end_time=window[1],
+                    **kwargs,
+                )
+                events.extend(response.data)
+
+                if onPage:
+                    onPage(len(response.data))
+
+                page = response.next_page
+
+                if not page:
+                    return events
+
+        with ThreadPoolExecutor(max_workers=AUDIT_WORKERS) as pool:
+            sliced = list(pool.map(fetchSlice, slices))
+
+        result = []
+
+        for event in (event for events in sliced for event in events):
+            data = event.data
+            identity = data.identity
+            request = data.request
+            response = data.response
+
+            result.append(
+                {
+                    "time": event.event_time,
+                    "event_name": data.event_name,
+                    "source": event.source,
+                    "action": getattr(request, "action", None),
+                    "path": getattr(request, "path", None),
+                    "status": getattr(response, "status", None),
+                    "message": getattr(response, "message", None),
+                    "resource_name": data.resource_name,
+                    "resource_id": data.resource_id,
+                    "compartment_id": data.compartment_id,
+                    "compartment_name": data.compartment_name,
+                    "principal_id": getattr(identity, "principal_id", None),
+                    "principal_name": getattr(identity, "principal_name", None),
+                    "auth_type": getattr(identity, "auth_type", None),
+                    "ip_address": getattr(identity, "ip_address", None),
+                    "user_agent": getattr(identity, "user_agent", None),
+                }
+            )
+
+        return result

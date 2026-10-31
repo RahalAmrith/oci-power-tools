@@ -58,7 +58,15 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     padding: 3px 8px; border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid);
     white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; text-align: left;
   }
+  table.fixed { table-layout: fixed; }
+  table.fixed th, table.fixed td { max-width: none; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .resizer {
+    position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 4;
+    touch-action: none;
+  }
+  .resizer:hover, .resizer.active { background: var(--sel); opacity: 0.5; }
+  body.resizing { cursor: col-resize; user-select: none; }
   thead th {
     position: sticky; top: 0; z-index: 2; background: var(--head); font-weight: 400;
     color: var(--muted); text-align: center; user-select: none;
@@ -179,6 +187,69 @@ __BODY__
     var n = Number(t.replace(/,/g, ""));
     return t !== "" && isFinite(n) ? n : t.toLowerCase();
   }
+
+  // Freeze the auto sized columns into a <colgroup> so each one can be resized individually
+  var headCells = table.querySelectorAll("tr.names th");
+  var colgroup = document.createElement("colgroup");
+  var cols = Array.prototype.map.call(headCells, function (th) {
+    var col = document.createElement("col");
+    col.style.width = th.getBoundingClientRect().width + "px";
+    colgroup.appendChild(col);
+    return col;
+  });
+  table.insertBefore(colgroup, table.firstChild);
+  table.classList.add("fixed");
+
+  function syncTableWidth() {
+    var total = 0;
+    cols.forEach(function (c) { total += parseFloat(c.style.width); });
+    table.style.width = total + "px";
+  }
+
+  function setWidth(i, w) {
+    cols[i].style.width = Math.max(40, Math.round(w)) + "px";
+    syncTableWidth();
+  }
+
+  function autoFit(i) {
+    var widest = headCells[i].scrollWidth;
+    Array.prototype.forEach.call(body.rows, function (r) {
+      widest = Math.max(widest, r.cells[i].scrollWidth);
+    });
+    setWidth(i, widest + 18);
+  }
+
+  syncTableWidth();
+
+  Array.prototype.forEach.call(headCells, function (th, i) {
+    if (th.classList.contains("corner")) return;
+    var grip = document.createElement("div");
+    grip.className = "resizer";
+    grip.title = "Drag to resize, double click to fit";
+    th.appendChild(grip);
+
+    grip.addEventListener("click", function (e) { e.stopPropagation(); });
+    grip.addEventListener("dblclick", function (e) { e.stopPropagation(); autoFit(i); });
+    grip.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var startX = e.clientX, startW = th.getBoundingClientRect().width;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add("active");
+      document.body.classList.add("resizing");
+      function move(ev) { setWidth(i, startW + ev.clientX - startX); }
+      function stop() {
+        grip.classList.remove("active");
+        document.body.classList.remove("resizing");
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", stop);
+        grip.removeEventListener("pointercancel", stop);
+      }
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", stop);
+      grip.addEventListener("pointercancel", stop);
+    });
+  });
 
   Array.prototype.forEach.call(table.querySelectorAll("tr.names th:not(.corner)"), function (th, i) {
     th.title = "Click to sort";
