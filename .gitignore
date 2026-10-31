@@ -1,0 +1,15 @@
+/venv/
+/env/
+/reports/*
+.idea/
+__pycache__/
+.env
+
+/test*
+
+# Build output
+/build/
+/dist/
+*.spec
+
+.DS_Store
