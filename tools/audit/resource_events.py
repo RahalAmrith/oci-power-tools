@@ -3,17 +3,13 @@
 # description : Audit - list the audit events of a resource, found by its ocid
 #########################################################################################
 
-from core.prompts import (
-    ToolAbort,
-    askIncludeReads,
-    selectCompartment,
-    selectTimeWindow,
-)
+from core.prompts import ToolAbort, askIncludeReads, selectTimeWindow
 from tools.audit._common import (
+    OCID_PATTERN,
     RESOURCE_EVENT_COLUMNS,
+    auditQuery,
     explainNoMatch,
     fetchEvents,
-    hideReads,
     selectRegions,
     toDataframe,
 )
@@ -22,26 +18,17 @@ from tools.audit._common import (
 def run(ctx):
     resourceId = str(input("\nEnter the resource ocid : ")).strip()
 
-    if not resourceId.startswith("ocid1."):
+    if not OCID_PATTERN.match(resourceId):
         raise ToolAbort("ERROR : That is not an ocid.")
 
-    compartment = selectCompartment(ctx, includeRoot=True)
-    regions = selectRegions(ctx, [compartment], ocid=resourceId)
+    regions = selectRegions(ctx, ocid=resourceId)
     start, end = selectTimeWindow()
     includeReads = askIncludeReads()
 
-    fetched = fetchEvents(ctx, [compartment], regions, start, end)
-    events = fetched if includeReads else hideReads(fetched)
-
-    # The ocid is also checked in the request path, some events (e.g. updates of a
-    # child object) carry the parent ocid there and not in the resource id
-    events = [
-        e
-        for e in events
-        if e["resource_id"] == resourceId or resourceId in str(e["path"])
-    ]
+    query = auditQuery([("data.resourceId", resourceId)], includeReads)
+    events = fetchEvents(ctx, query, regions, start, end)
 
     if not events:
-        explainNoMatch(fetched, includeReads, "this resource")
+        explainNoMatch(regions, includeReads, "this resource")
 
     return toDataframe(events, RESOURCE_EVENT_COLUMNS)

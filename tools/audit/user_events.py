@@ -6,9 +6,9 @@
 from core.prompts import askIncludeReads, selectTimeWindow, selectUser
 from tools.audit._common import (
     USER_EVENT_COLUMNS,
+    auditQuery,
     explainNoMatch,
     fetchEvents,
-    hideReads,
     selectCompartmentScope,
     selectRegions,
     toDataframe,
@@ -18,28 +18,18 @@ from tools.audit._common import (
 def run(ctx):
     user = selectUser(ctx)
 
-    compartments = selectCompartmentScope(ctx)
-    regions = selectRegions(ctx, compartments)
+    compartment = selectCompartmentScope(ctx)
+    regions = selectRegions(ctx, compartment)
     start, end = selectTimeWindow()
     includeReads = askIncludeReads()
 
-    fetched = fetchEvents(ctx, compartments, regions, start, end)
-    events = fetched if includeReads else hideReads(fetched)
-
-    events = [e for e in events if e["principal_id"] == user["id"]]
+    query = auditQuery(
+        [("data.identity.principalId", user["id"])], includeReads, compartment
+    )
+    events = fetchEvents(ctx, query, regions, start, end)
 
     if not events:
         print(f"\nLooking for principal id : {user['id']}")
-
-        hidden = [e for e in fetched if e["principal_id"] == user["id"]]
-
-        if hidden and not includeReads:
-            print(
-                f"Found {len(hidden)} events of this user, but all are read events. "
-                "Answer y to include them."
-            )
-            return toDataframe([], USER_EVENT_COLUMNS)
-
-        explainNoMatch(fetched, includeReads, f"user {user['name']}")
+        explainNoMatch(regions, includeReads, f"user {user['name']}")
 
     return toDataframe(events, USER_EVENT_COLUMNS)

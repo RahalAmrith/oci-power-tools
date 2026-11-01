@@ -7,7 +7,6 @@
 #########################################################################################
 
 import datetime
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, timezone
 import os
 
@@ -17,11 +16,11 @@ import json
 from .utils import getProfilesFromConfig
 
 
-# The audit log can only be paged one page of about 100 events at a time, so a busy
-# compartment takes thousands of calls. The time window is cut into slices that are
-# paged side by side. The audit API allows around 5 requests per second.
-AUDIT_SLICE = timedelta(hours=6)
-AUDIT_WORKERS = 5
+# Logging search refuses a period longer than 14 days and returns at most 1000 results
+# per page. A query over a busy tenancy can take a while, so reads get a long timeout.
+SEARCH_MAX_PERIOD = timedelta(days=14)
+SEARCH_PAGE_SIZE = 1000
+SEARCH_TIMEOUT = (10, 300)
 
 
 class OCISDK:
@@ -488,90 +487,99 @@ class OCISDK:
 
         return [sub.region_name for sub in subscriptions.data if sub.status == "READY"]
 
-    def getAuditEvents(
+    def searchAuditLogs(
         self,
-        compartmentID,
+        query,
         startTime,
         endTime,
         cfgName="DEFAULT",
         region=None,
         onPage=None,
     ):
-        """onPage is called with the number of events of every page fetched, from
-        several threads."""
+        """Runs a logging search query over the audit logs of a region.
+
+        A period longer than the search allows is split and every part is paged
+        through. onPage is called with the number of results of every page.
+        """
 
         config = self.configs[cfgName]
 
         if region:
             config = dict(config, region=region)
 
-        slices = []
-        sliceStart = startTime
+        search_client = oci.loggingsearch.LogSearchClient(
+            config, timeout=SEARCH_TIMEOUT
+        )
 
-        while sliceStart < endTime:
-            sliceEnd = min(sliceStart + AUDIT_SLICE, endTime)
-            slices.append((sliceStart, sliceEnd))
-            sliceStart = sliceEnd
+        result = []
+        periodStart = startTime
 
-        def fetchSlice(window):
-            # A client per slice, so nothing is shared between the threads
-            audit_client = oci.audit.AuditClient(config)
+        while periodStart < endTime:
+            periodEnd = min(periodStart + SEARCH_MAX_PERIOD, endTime)
 
-            events = []
+            details = oci.loggingsearch.models.SearchLogsDetails(
+                time_start=periodStart,
+                time_end=periodEnd,
+                search_query=query,
+                is_return_field_info=False,
+            )
+
             page = None
 
             while True:
-                kwargs = {"retry_strategy": oci.retry.DEFAULT_RETRY_STRATEGY}
+                kwargs = {
+                    "limit": SEARCH_PAGE_SIZE,
+                    "retry_strategy": oci.retry.DEFAULT_RETRY_STRATEGY,
+                }
 
                 if page:
                     kwargs["page"] = page
 
-                response = audit_client.list_events(
-                    compartment_id=compartmentID,
-                    start_time=window[0],
-                    end_time=window[1],
-                    **kwargs,
+                response = search_client.search_logs(
+                    search_logs_details=details, **kwargs
                 )
-                events.extend(response.data)
+
+                for record in response.data.results:
+                    result.append(self._auditRecord(record.data))
 
                 if onPage:
-                    onPage(len(response.data))
+                    onPage(len(response.data.results))
 
                 page = response.next_page
 
                 if not page:
-                    return events
+                    break
 
-        with ThreadPoolExecutor(max_workers=AUDIT_WORKERS) as pool:
-            sliced = list(pool.map(fetchSlice, slices))
-
-        result = []
-
-        for event in (event for events in sliced for event in events):
-            data = event.data
-            identity = data.identity
-            request = data.request
-            response = data.response
-
-            result.append(
-                {
-                    "time": event.event_time,
-                    "event_name": data.event_name,
-                    "source": event.source,
-                    "action": getattr(request, "action", None),
-                    "path": getattr(request, "path", None),
-                    "status": getattr(response, "status", None),
-                    "message": getattr(response, "message", None),
-                    "resource_name": data.resource_name,
-                    "resource_id": data.resource_id,
-                    "compartment_id": data.compartment_id,
-                    "compartment_name": data.compartment_name,
-                    "principal_id": getattr(identity, "principal_id", None),
-                    "principal_name": getattr(identity, "principal_name", None),
-                    "auth_type": getattr(identity, "auth_type", None),
-                    "ip_address": getattr(identity, "ip_address", None),
-                    "user_agent": getattr(identity, "user_agent", None),
-                }
-            )
+            periodStart = periodEnd
 
         return result
+
+    @staticmethod
+    def _auditRecord(record):
+        content = record.get("logContent") or {}
+        data = content.get("data") or {}
+        identity = data.get("identity") or {}
+        request = data.get("request") or {}
+        response = data.get("response") or {}
+
+        return {
+            # datetime is epoch milliseconds
+            "time": datetime.datetime.fromtimestamp(
+                record["datetime"] / 1000, tz=timezone.utc
+            ),
+            "event_name": data.get("eventName"),
+            "source": content.get("source"),
+            "action": request.get("action"),
+            "path": request.get("path"),
+            "status": response.get("status"),
+            "message": response.get("message"),
+            "resource_name": data.get("resourceName"),
+            "resource_id": data.get("resourceId"),
+            "compartment_id": data.get("compartmentId"),
+            "compartment_name": data.get("compartmentName"),
+            "principal_id": identity.get("principalId"),
+            "principal_name": identity.get("principalName"),
+            "auth_type": identity.get("authType"),
+            "ip_address": identity.get("ipAddress"),
+            "user_agent": identity.get("userAgent"),
+        }

@@ -68,7 +68,7 @@ Every tool does one thing: it fetches data from OCI and returns a **pandas DataF
 | | Protection rules in a WAF policy | Rule name, action, description, labels |
 | | Recommendations in a WAF policy | Recommended actions, description, labels |
 | 📈 **Metrics** | All metrics | Metrics of a compartment you pick: namespace, name, resource group and dimensions |
-| 🧾 **Audit** | Audit events of a resource | Who did what to a resource: events matching its OCID in a compartment you pick ([details](#audit-events)) |
+| 🧾 **Audit** | Audit events of a resource | Who did what to a resource, found by its OCID ([details](#audit-events)) |
 | | Audit events of a user | Recent events performed by a user you search for, in one or all compartments ([details](#audit-events)) |
 
 <a id="permissions-of-a-user"></a>
@@ -98,18 +98,18 @@ Look up a user by name, email or OCID. The tool then:
 
 <br>
 
-Both tools ask which **regions** to search (the regions the compartments are using, or one you pick), a **time window** (last hour, 24 hours, 7 days, 30 days, or a custom number of days) and whether to include **read events**. Read events (`GET` / `HEAD`) are hidden by default because they make up most of the log. Results are shown newest first.
+Both tools search the audit logs through **OCI Logging search**, which filters on the OCI side, so only the matching events are downloaded. They ask which **regions** to search (the regions in use, or one you pick), a **time window** (last hour, 24 hours, 7 days, 30 days, or a custom number of days) and whether to include **read events**. Read events (`GET` / `HEAD`) are hidden by default because they make up most of the log. Results are shown newest first, with the region of each event.
 
-- **Audit events of a resource**: enter the resource OCID and pick the compartment it lives in (the tenancy root is in the list). If the OCID contains a region (e.g. `uk-london-1`) only that region is searched. Events whose resource or request path contains that OCID are returned.
-- **Audit events of a user**: search for the user as in *Permissions of a user*, then scan **all compartments** or **one**. Events performed by that user are returned.
+- **Audit events of a resource**: enter the resource OCID. The whole tenancy is searched, no compartment is needed. If the OCID contains a region (e.g. `uk-london-1`) only that region is searched. Events whose resource ID is that OCID are returned.
+- **Audit events of a user**: search for the user as in *Permissions of a user*, then search **all compartments** or **one**. Events performed by that user are returned.
 
 **Keep these in mind:**
 
-- The OCI Audit API can only be queried one compartment at a time, and cannot filter by resource or user. The tools download the events of each compartment and filter them here, so scanning all compartments over a long window can take a while. The time window is fetched in parallel slices and a running count of events is shown while it works.
-- A resource is logged in the compartment it had when the action happened. If it was moved, or you pick the wrong compartment, events can be missing.
-- **Audit events are stored per region.** Changes to a resource are logged in the region where the resource lives, so searching only the profile's region misses them. The tools find the regions in use from the last 30 days of cost data, which is much faster than querying every subscribed region. Resources that cost nothing don't show up there, so if you expect events and get none, pick the region yourself. If the cost data can't be read you are asked to pick a region.
+- **Audit events are stored per region.** Changes to a resource are logged in the region where the resource lives, so searching only the profile's region misses them. The tools find the regions in use from the last 30 days of cost data, which is much faster than searching every subscribed region. Resources that cost nothing don't show up there, so if you expect events and get none, pick the region yourself. If the cost data can't be read you are asked to pick a region.
+- Logging search accepts at most 14 days per query, so a longer window is split and searched in parts. A busy tenancy can still take a minute or more per region; a running count is shown while it works. A region that does not answer in time is skipped with a message.
+- Only the events whose resource ID is the OCID are found. Events that mention the OCID only in the request (for example an update to a child object) are not.
+- The user filter is the user's OCID, so only users known to the IAM API are found. Choosing one compartment matches that compartment only, not the compartments under it.
 - OCI keeps audit events for 90 days by default (up to 365 if your tenancy extends it).
-- Users are matched by their OCID, so only users known to the IAM API are found. Compartments you cannot read are skipped with a message.
 
 </details>
 
@@ -277,7 +277,7 @@ Allow group <group> to read volume-family in tenancy
 Allow group <group> to read cluster-family in tenancy
 Allow group <group> to read waas-family in tenancy
 Allow group <group> to read metrics in tenancy
-Allow group <group> to read audit-events in tenancy
+Allow group <group> to read log-content in tenancy
 Allow group <group> to read usage-report in tenancy
 ```
 
