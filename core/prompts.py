@@ -6,6 +6,8 @@
 
 import datetime
 
+from tabulate import tabulate
+
 
 TIME_WINDOWS = [
     ("Last 1 hour", datetime.timedelta(hours=1)),
@@ -14,10 +16,36 @@ TIME_WINDOWS = [
     ("Last 30 days", datetime.timedelta(days=30)),
 ]
 MAX_WINDOW_DAYS = 365
+MAX_COMPARTMENT_ROWS = 20
 
 
 class ToolAbort(Exception):
     """Raised by a tool to stop cleanly, the message is shown to the user."""
+
+
+def printCompartmentTable(compartments):
+    """Fills each column top to bottom, MAX_COMPARTMENT_ROWS entries per column."""
+
+    rowCount = min(len(compartments), MAX_COMPARTMENT_ROWS)
+    columnCount = -(-len(compartments) // MAX_COMPARTMENT_ROWS)
+    numWidth = max(2, len(str(len(compartments))))
+    rows = []
+
+    for r in range(rowCount):
+        row = []
+
+        for c in range(columnCount):
+            i = c * MAX_COMPARTMENT_ROWS + r
+            row.append(
+                f"{i + 1:0{numWidth}d} - {compartments[i]['name']}"
+                if i < len(compartments)
+                else ""
+            )
+
+        rows.append(row)
+
+    print("")
+    print(tabulate(rows, tablefmt="rounded_outline", disable_numparse=True))
 
 
 def selectCompartment(ctx, includeRoot=False):
@@ -30,14 +58,22 @@ def selectCompartment(ctx, includeRoot=False):
         root = {"id": ctx.ocisdk.configs[ctx.profile]["tenancy"], "name": "root"}
         compartments = [root] + compartments
 
-    print("Select the relavant compartment number from the list\n")
+    if not compartments:
+        raise ToolAbort("ERROR : No compartments found.")
 
-    for i, c in enumerate(compartments):
-        print(f"\t{i+1} - {c['name']}")
+    print("Select the relavant compartment number from the list")
+    printCompartmentTable(compartments)
 
-    cno = int(input("Enter compartment number : ")) - 1
+    while True:
+        choice = str(input("\nEnter compartment number (q = cancel) : ")).strip().lower()
 
-    return compartments[cno]
+        if choice == "q":
+            raise ToolAbort("Cancelled.")
+
+        if choice.isdigit() and 1 <= int(choice) <= len(compartments):
+            return compartments[int(choice) - 1]
+
+        print("Error : Invalid option")
 
 
 def selectUser(ctx):

@@ -13,15 +13,20 @@ warnings.filterwarnings("ignore")
 from core.menu import chooseFromMenu
 from core.runner import runTool
 from core.session import startSession
+from core.ui import printBanner, showScreen
 from tools import SECTIONS
+
+printBanner()
+print("\n  Starting up ...\n")
 
 ctx = startSession()
 
-print("Select option to continue :")
-
 while True:
     sectionIdx = chooseFromMenu(
-        "Select a section :", [s.SECTION_NAME for s in SECTIONS], "Exit"
+        "Select a section :",
+        [s.SECTION_NAME for s in SECTIONS],
+        "Exit",
+        drawScreen=lambda: showScreen(ctx, "Home"),
     )
 
     if sectionIdx is None:
@@ -31,11 +36,17 @@ while True:
     tools = section.getTools()
 
     toolIdx = chooseFromMenu(
-        f"====== {section.SECTION_NAME}", [name for name, _ in tools], "Back"
+        f"====== {section.SECTION_NAME}",
+        [name for name, _ in tools],
+        "Back",
+        drawScreen=lambda: showScreen(ctx, f"Home > {section.SECTION_NAME}"),
     )
 
     if toolIdx is not None:
-        runTool(tools[toolIdx][1], ctx)
+        toolName, tool = tools[toolIdx]
+
+        showScreen(ctx, f"Home > {section.SECTION_NAME} > {toolName}")
+        runTool(tool, ctx)
         break
 
 input("\nPress Enter to exit ...")
