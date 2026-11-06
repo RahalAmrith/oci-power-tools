@@ -39,7 +39,8 @@ jobs:
             target: oraclelinux8-x64
             container: oraclelinux:8
             oracle: true
-          - os: macos-14
+          # Apple Silicon. macos-14 was retired by GitHub on 2 November 2026
+          - os: macos-15
             target: macos-arm64
           - os: windows-latest
             target: windows-x64
